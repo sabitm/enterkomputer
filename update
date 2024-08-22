@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+
+fetch() {
+    curl 'https://www.enterkomputer.com/jeanne/v2/product-list' \
+      -H 'authority: www.enterkomputer.com' \
+      -H 'accept: application/json' \
+      -H 'accept-language: en-US,en;q=0.9' \
+      -H 'cache-control: no-cache' \
+      -H 'content-type: application/json' \
+      -H 'cookie: enter_csrf_cookie=39c4b06d35ad1ba5eac6f37e3ec8fe5f; enter_session=c5a5404634b9e9cc3da75e7b5565f7b9f21a2af8' \
+      -H 'origin: https://www.enterkomputer.com' \
+      -H 'pragma: no-cache' \
+      -H 'referer: https://www.enterkomputer.com/category/14/notebook?showall=1662953859' \
+      -H 'sec-ch-ua: "Google Chrome";v="105", "Not)A;Brand";v="8", "Chromium";v="105"' \
+      -H 'sec-ch-ua-mobile: ?0' \
+      -H 'sec-ch-ua-platform: "Linux"' \
+      -H 'sec-fetch-dest: empty' \
+      -H 'sec-fetch-mode: cors' \
+      -H 'sec-fetch-site: same-origin' \
+      -H 'user-agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/105.0.0.0 Safari/537.36' \
+      -H 'x-requested-with: XMLHttpRequest' \
+      --data-raw '{"KCODE":"14","SCODE":"all","BCODE":"all","BNAME":"","MORDR":"default","MSTGE":"mapping","MKYWD":"","MTAGS":"","MSGMN":"category","MPAGE":0,"token":"U2FsdGVkX1-E55sT1JEmUtTtgjHvzgK98PZU8pKsTjQf8t2cV6U0Rrrd5ijzmdtRiKOvKb944B267vLzsZdvag","signature":"61ce8df4c7732070f2022f1fe196074e"}' \
+      --compressed --http1.1
+}
+
+TMPFILE=$(mktemp)
+
+echo "Fetching..."
+echo
+
+fetch > "$TMPFILE"
+echo "Fetching done..."
+
+# jq -r '.result[].parent[].child[].product[] | "\(.PPRCZ[0]) - \(.PDTLS) ~ \(.PNAME)"' "$TMPFILE" > lists
+jq -r '.result[].PPRNT[].PCHLD[].PLIST[] | "\(.PPRCZ[0]) - \(.PDTLS) ~ \(.PNAME)"' "$TMPFILE" > lists
+echo "Done! Result written to file 'lists'"
