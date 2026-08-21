@@ -25,12 +25,14 @@ Write a script and run it through uvx:
 from tokopaedi import search, SearchFilters
 
 filters = SearchFilters(pmin=4500000, pmax=7000000)
-results = search("thinkpad t14", max_result=10, filters=filters)
+results = search("thinkpad t14", max_result=100, filters=filters)
 
 for r in results:
     print(f"Rp{r.price:,} | sold={r.sold_count} | {r.product_name}")
     print(f"   {(r.url or '').split('?')[0]}")
 ```
+
+`search()` paginates internally: it follows `additionalParams` (`next_param`) recursively until `max_result` is reached or pages run out. No manual pagination needed - just raise `max_result`. Dedupe still required (URLs carry `?extParam=...`).
 
 Run:
 
@@ -60,7 +62,9 @@ Useful methods on results:
 - **Rate limit**: add `time.sleep(2)` between successive `search()` calls.
 - **Dedupe across queries**: URLs carry a query-string (`?extParam=...`); strip it before deduping.
 - **Field names**: it is `product_name`, not `name`; `ProductData` has no `.name`.
-- Plain `curl` against tokopedia.com gets blocked by TLS-fingerprint bot detection; do not hand-roll HTTP requests — always go through tokopaedi (it uses curl-cffi to impersonate Chrome).
+- `search()` returns `None` on any exception (bare `except` prints traceback and returns None) - check for it before iterating.
+- Result count may fall short of `max_result` even without blocking (e.g. 73 unique for a broad keyword at max_result=100) - that is the end of pagination, not an error.
+- Plain `curl` against tokopedia.com gets blocked by TLS-fingerprint bot detection; do not hand-roll HTTP requests - always go through tokopaedi (it uses curl-cffi to impersonate Chrome).
 
 ## Interpreting results
 

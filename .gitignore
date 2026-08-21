@@ -1,3 +1,4 @@
 lists
 data
 ignored
+**__pycache__**
