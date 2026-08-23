@@ -23,7 +23,7 @@ The session persists in the profile. If Shopee shows a slider CAPTCHA ("Geser un
 ## Usage
 
 ```bash
-uvx --with requests --with websocket-client python scripts/shopee_search.py "thinkpad t14 second" \
+uvx --with requests --with websocket-client python scripts/shopee_search.py "laptop" \
   --pmin 3000000 --pmax 7000000 --limit 10 --pages 3
 ```
 
@@ -33,6 +33,7 @@ Flags: `--pmin`/`--pmax` (IDR), `--limit`.
 
 ## Gotchas
 
+- **Bait pricing is the norm, not the exception**: multi-variant listings advertise the *cheapest* variant under headline specs. Verified examples: "T14 G3 i5 @5jt" (real: 8jt), "T14 i7 Gen11 32GB/1TB @5.14jt" (real: 9.09jt; 5.14jt = i5 with NO SSD), "EliteBook 845 G8 R7/32GB/1TB @5.29jt" (real: ~10jt). Never quote a headline spec-price without checking `item.models` first.
 - **Headless mode is detected** - redirects to `/verify/traffic/error`. Always run headed.
 - **Cold navigation may trigger CAPTCHA** even when logged in; solve it in the visible window and rerun.
 - **First paint is slow**: poll for product anchors up to ~25s instead of fixed sleeps.
@@ -43,6 +44,16 @@ Flags: `--pmin`/`--pmax` (IDR), `--limit`.
 - Price/name parsing from card text is noisy: names may embed trailing prices/ratings (e.g., `...BergaransiRp3.400`). Strip before presenting.
 - Keep `PORT=9226` and profile path consistent between manual login and script runs, or you will re-login.
 - Requires deps at call time: `uvx --with requests --with websocket-client`.
+
+## Variant price verification
+
+The search page shows only the headline (cheapest-variant) price. Real per-model prices come from the PDP API: drive the same CDP Chrome to a product URL, capture `/api/v4/pdp/get_pc` via `Network.enable`, then read `data.item.models[]` - each model has `name`, `price` (divide by 100000 for IDR), `sold_count`. Non-obvious details:
+
+- State is in `window.__STORE__`, not `__INITIAL_STATE__`, and `item.items` is often empty after hydration - network capture is the reliable path.
+- Hydration takes ~10s; DOM probes before that return an empty shell (~1.8KB body).
+- **Single model = the title config is exact** (no variant bait). Multiple models = assume the advertised price maps to the cheapest one until proven otherwise.
+
+Use `scripts/variant_check.py <product-url> [more-urls]` which implements all of this (same script handles Tokopedia; see tokopedia-search skill).
 
 ## Tokopedia alternative
 

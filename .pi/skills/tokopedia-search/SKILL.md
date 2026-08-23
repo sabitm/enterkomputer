@@ -25,7 +25,7 @@ Write a script and run it through uvx:
 from tokopaedi import search, SearchFilters
 
 filters = SearchFilters(pmin=4500000, pmax=7000000)
-results = search("thinkpad t14", max_result=100, filters=filters)
+results = search("laptop", max_result=100, filters=filters)
 
 for r in results:
     print(f"Rp{r.price:,} | sold={r.sold_count} | {r.product_name}")
@@ -56,6 +56,21 @@ Useful methods on results:
 - `results.enrich_details()` — fetch full details per item (slow)
 - `results.enrich_reviews(max_result=50)` — fetch reviews per item (slow)
 
+## Variant price verification
+
+`get_product()` (detail API) is broken - Tokopedia rejects its mobile-app fingerprint with `curl: (92) HTTP/2 stream error` on every attempt. Only `search()` works. To get real per-variant prices, drive the CDP-attached Chrome from the shopee-search skill with `scripts/variant_check.py`:
+
+```bash
+uv run --with requests --with websocket-client python scripts/variant_check.py <product-url> [more-urls]
+```
+
+It captures the `PDPMainInfo` GraphQL response via `Network.enable`; all RAM/SSD combo prices live in `components[name=new_variant_options].data[0].children[]` (`price`, `priceFmt`, `optionName`). Non-obvious details:
+
+- **Cache-bust the PDP URL** (append `?ck=<timestamp>`): the prefetch cache serves a compact payload with empty `basicInfo.name` and no variant data.
+- **Capture every matching response id**, not just the first/last: retries and replays can fire multiple times, and some are empty shells. Pick the one where `basicInfo.name` is non-null.
+- **Single-config listings have no `new_variant_options` component**; fall back to reading rendered DOM prices (`RpX.XXX.XXX` leaf nodes) after ~6s hydration.
+- One listing in ~10 is delisted between search and check (404 "Waduh, tujuanmu nggak ada") - treat as dead, don't retry.
+
 ## Gotchas
 
 - **Multi-variant listings show the starting variant's price** as `price`. The headline config may cost more via the variant picker on the product page. Advise users to confirm exact config with the seller before buying.
@@ -69,4 +84,3 @@ Useful methods on results:
 ## Interpreting results
 
 - `sold_count > 100` signals a proven seller listing; near 0 means new or unproven.
-- For used laptops, business lines (ThinkPad T14/T14s/X1 Carbon, EliteBook 840 G8, Latitude 7420/7320) dominate the 4-7jt IDR range and beat consumer laptops at the same price.
