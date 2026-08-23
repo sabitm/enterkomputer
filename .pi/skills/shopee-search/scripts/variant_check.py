@@ -79,6 +79,28 @@ class Tab:
         )
         self.seq = 0
         self.event_handler = None
+        # shopee PDP navigations are only safe once any shopee page has loaded;
+        # check_shopee sets this after its homepage warm-up pass
+        self.warmed = False
+
+    def healthy(self):
+        # wedge detector: a stuck renderer hangs even trivial CDP calls while
+        # /json endpoints keep answering normally
+        old = self.ws.gettimeout()
+        try:
+            self.ws.settimeout(8)
+            self.seq += 1
+            my_id = self.seq
+            self.ws.send(json.dumps({"id": my_id, "method": "Runtime.evaluate",
+                                     "params": {"expression": "1+1", "returnByValue": True}}))
+            while True:
+                data = json.loads(self.ws.recv())
+                if data.get("id") == my_id:
+                    return True
+        except Exception:
+            return False
+        finally:
+            self.ws.settimeout(old)
 
     def park(self):
         # never close the last page target: that exits Chrome entirely.
@@ -110,13 +132,20 @@ class Tab:
                     raise RuntimeError(str(data["error"]))
                 return data.get("result", {})
 
-    def js(self, expr, await_promise=False):
-        res = self.cmd(
-            "Runtime.evaluate",
-            expression=expr,
-            returnByValue=True,
-            awaitPromise=await_promise,
-        ).get("result", {})
+    def js(self, expr, await_promise=False, timeout_s=None):
+        old = self.ws.gettimeout() if timeout_s else None
+        if timeout_s:
+            self.ws.settimeout(timeout_s)
+        try:
+            res = self.cmd(
+                "Runtime.evaluate",
+                expression=expr,
+                returnByValue=True,
+                awaitPromise=await_promise,
+            ).get("result", {})
+        finally:
+            if old is not None:
+                self.ws.settimeout(old)
         if res.get("subtype") == "error":
             raise RuntimeError(res.get("description", "js error"))
         return res.get("value")
@@ -131,8 +160,8 @@ class Tab:
                 raw = self.ws.recv()
             except websocket.WebSocketTimeoutException:
                 continue
-            except Exception:
-                break
+            # no bare 'except: break' here: a dead socket must surface as an
+            # error upstream, not masquerade as 'no pdp payload captured'
             try:
                 data = json.loads(raw)
             except Exception:
@@ -160,6 +189,26 @@ def check_shopee(tab, url):
 
     tab.cmd("Network.enable")
     tab.event_handler = handler
+    if not tab.warmed:
+        # a cold session whose FIRST shopee navigation is a PDP gets soft-redirected
+        # to the homepage (no get_pc ever fires) or wedges the renderer outright.
+        # Land on any shopee page first; PDP->PDP hops from there are reliable.
+        tab.cmd("Page.bringToFront")
+        tab.cmd("Page.navigate", url="https://shopee.co.id/")
+        deadline = time.time() + 40
+        while time.time() < deadline:
+            try:
+                if tab.js("document.readyState==='complete' && location.hostname==='shopee.co.id'", timeout_s=8):
+                    break
+            except (websocket.WebSocketTimeoutException, RuntimeError):
+                pass
+            time.sleep(2)
+            if not tab.healthy():
+                return {"title": None, "note": "warmup failed (renderer wedged)"}
+        else:
+            return {"title": None, "note": "warmup failed (homepage never loaded)"}
+        time.sleep(4)
+        tab.warmed = True
     tab.cmd("Page.navigate", url=url)
 
     deadline = time.time() + 30
@@ -313,11 +362,14 @@ def main():
     ensure_chrome()
     tab = Tab()
     try:
-        for url in args.urls:
-            try:
-                r = check_shopee(tab, url) if is_shopee(url) else check_tokopedia(tab, url)
-            except Exception as e:
-                r = {"error": str(e)}
+        for i, url in enumerate(args.urls):
+            if i and not tab.healthy():
+                r = {"error": "renderer wedged; kill chrome, relaunch, rerun this url"}
+            else:
+                try:
+                    r = check_shopee(tab, url) if is_shopee(url) else check_tokopedia(tab, url)
+                except Exception as e:
+                    r = {"error": str(e)}
             print(json.dumps({url: r}, indent=2), flush=True)
             time.sleep(1)
     finally:

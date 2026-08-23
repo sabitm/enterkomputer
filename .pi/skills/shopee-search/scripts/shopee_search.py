@@ -27,10 +27,19 @@ def ensure_chrome():
         return
     except Exception:
         pass
+    # stale locks from an unclean kill make a fresh launch hand off and exit silently
+    for sfx in ("Lock", "Cookie", "Socket"):
+        try:
+            os.remove(os.path.join(PROFILE_DIR, f"Singleton{sfx}"))
+        except OSError:
+            pass
+    # --ozone-platform=x11: on Wayland sessions, native-Wayland Chrome hangs every
+    # CDP Input.* call (result grid never hydrates); XWayland keeps input trusted
     subprocess.Popen(
         [
             "google-chrome-stable",
             f"--remote-debugging-port={PORT}",
+            "--ozone-platform=x11",
             "--no-first-run",
             "--remote-allow-origins=*",
             f"--user-data-dir={PROFILE_DIR}",
@@ -50,13 +59,29 @@ def ensure_chrome():
 
 
 class Tab:
+    def _responsive(self, ws_url):
+        # a parked tab can belong to a wedged renderer (all CDP calls hang while
+        # /json endpoints stay alive); probe before reusing it
+        try:
+            ws = websocket.create_connection(ws_url, timeout=8, origin=f"http://127.0.0.1:{PORT}")
+            ws.send(json.dumps({"id": 1, "method": "Runtime.evaluate",
+                                "params": {"expression": "1+1", "returnByValue": True}}))
+            ws.settimeout(8)
+            json.loads(ws.recv())
+            ws.close()
+            return True
+        except Exception:
+            return False
+
     def __init__(self):
         # Chrome >=111 requires PUT for /json/new; reuse an idle tab if present
         self.tab_id = None
         ws_url = None
         try:
             for t in requests.get(BASE + "/json/list", timeout=5).json():
-                if t.get("type") == "page" and t.get("url", "").startswith(("about:blank", "chrome://newtab")):
+                if (t.get("type") == "page"
+                        and t.get("url", "").startswith(("about:blank", "chrome://newtab"))
+                        and self._responsive(t["webSocketDebuggerUrl"])):
                     ws_url = t["webSocketDebuggerUrl"]
                     self.tab_id = t["id"]
                     break
@@ -164,6 +189,18 @@ def parse_card(card):
 
 def search_page(tab, keyword, page, pmin, pmax, want, deadline_s=110):
     url = f"https://shopee.co.id/search?keyword={requests.utils.quote(keyword)}&page={page}"
+    if pmin > 0 or pmax < 10**12:
+        # server-side PRICE_RANGE filter; only in-band cards hydrate.
+        # The client-side band check below stays as a safety net because
+        # sponsored/ad cards can bypass server filters.
+        lo = max(pmin, 0)
+        hi = pmax if pmax < 10**12 else 10**13
+        opts = requests.utils.quote(
+            json.dumps([{"group_name": "PRICE_RANGE",
+                         "values": [f"{lo}\u25b6\u25c0{hi}"]}],
+                       separators=(",", ":"), ensure_ascii=False),
+            safe="")
+        url += f"&fe_filter_options={opts}"
     tab.cmd("Page.navigate", url=url)
     # wait for full load BEFORE any input; scrolling mid-load breaks hydration
     load_deadline = time.time() + 30

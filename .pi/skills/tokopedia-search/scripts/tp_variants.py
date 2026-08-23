@@ -3,8 +3,8 @@
 
 PDPMainInfo GraphQL often arrives as an unparseable compact payload, so we
 skip network capture entirely: wait for the buy box ("Subtotal"), read the
-displayed price, then click group pills (CPU/model) and option pills
-(RAM/SSD), re-reading the subtotal after each click.
+displayed price, then click group pills (variant families) and option pills
+(spec axes like capacity/memory), re-reading the subtotal after each click.
 """
 import json
 import sys
@@ -160,8 +160,8 @@ def check(tab, url):
 
     import re
     pills = tab.js(PILLS_JS) or []
-    # group pills name CPU/model families; option pills are RAM/SSD specs
-    # (Tokopedia merges RAM+SSD into one pill without GB/TB units sometimes)
+    # group pills name the variant family; option pills are spec axes
+    # (Tokopedia merges some spec axes into one pill without unit tokens)
     def is_group(p):
         if re.search(r"SSD|RAM|\d+\s?(GB|TB)", p, re.I):
             return False
@@ -199,7 +199,8 @@ def main():
                 r = check(tab, url)
             except Exception as e:
                 r = {"error": str(e)}
-            print(json.dumps({url: r}, indent=1), flush=True)
+            # one JSON object per line so callers can stream/parse partial results
+            print(json.dumps({url: r}), flush=True)
             time.sleep(1)
     finally:
         tab.park()
