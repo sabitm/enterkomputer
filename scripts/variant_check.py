@@ -103,28 +103,56 @@ def check_tokopedia(cdp, url):
             root, basic = cand, b
             break
     if not root:
-        # compact/no-variant payload: fall back to rendered DOM
-        time.sleep(6)
-        dom = eval_js(cdp, """
+        # Tokopedia sometimes serves a compact binary PDPMainInfo (base64-ish
+        # extraPayload, no parseable basicInfo) - GraphQL path is dead there.
+        # Fall back to clicking each variant pill and reading the rendered price.
+        time.sleep(14)  # full hydration before pill enumeration
+        eval_js(cdp, "window.scrollTo(0, 400)")
+        time.sleep(2)
+        btns = eval_js(cdp, """
           (() => {
-            const prices = [...document.querySelectorAll('p,div,span')]
-              .filter(e => e.children.length === 0)
-              .map(e => e.textContent.trim())
-              .filter(t => /^Rp\\d{1,3}(\\.\\d{3})+$/.test(t))
-              .map(t => parseInt(t.replace(/\\D/g,'')))
-              .filter(p => p >= 100000);
-            const optBtns = [...document.querySelectorAll('button,label,[role=button]')]
-              .map(b => b.textContent.trim())
-              .filter(t => t && t.length < 40 && /\\d+\\s?(GB|TB)/i.test(t));
-            return {prices: [...new Set(prices)].sort((a,b)=>a-b),
-                    optionPills: [...new Set(optBtns)].slice(0,30)};
+            const els = [...document.querySelectorAll('button, [role=button], label')]
+              .map((b, i) => ({i, t: (b.textContent||'').trim()}))
+              .filter(x => x.t && x.t.length < 60 && /(i5|i7|SSD|RAM|\\d+\\s?(GB|TB))/i.test(x.t));
+            return els;
           })()
-        """) or {}
+        """) or []
+
+        def read_price():
+            return eval_js(cdp, """
+              (() => {
+                const t = document.querySelector('[data-testid="lblPDPDetailProductPriceAmount"]');
+                if (t) return t.textContent.trim();
+                const leaves = [...document.querySelectorAll('p,div,span')]
+                  .filter(e => e.children.length === 0)
+                  .map(e => e.textContent.trim())
+                  .filter(x => /^Rp\\d{1,3}(\\.\\d{3})+$/.test(x));
+                return leaves[0] || null;
+              })()
+            """)
+
+        combos, seen = [], set()
+        for b in btns:
+            txt = b["t"]
+            if txt in seen or txt.startswith("Terpilih:"):
+                continue
+            seen.add(txt)
+            ok = eval_js(cdp, """
+              (() => {
+                const els = [...document.querySelectorAll('button, [role=button], label')];
+                const el = els.find(e => (e.textContent||'').trim() === %s);
+                if (!el) return false;
+                el.click();
+                return true;
+              })()
+            """ % json.dumps(txt))
+            time.sleep(2)
+            if ok:
+                combos.append({"options": txt, "price": read_price()})
         return {"url": url, "marketplace": "tokopedia",
                 "name": None,
-                "dom_prices": dom.get("prices", []),
-                "option_pills": dom.get("optionPills", []),
-                "note": "no variant payload; DOM read"}
+                "combos": combos,
+                "note": "no variant payload; pill-click fallback"}
     out = {"url": url, "marketplace": "tokopedia",
            "name": basic.get("name"), "condition": basic.get("condition"),
            "listed_price": basic.get("price", {}).get("value"),

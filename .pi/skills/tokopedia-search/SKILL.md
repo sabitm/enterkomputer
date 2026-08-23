@@ -64,16 +64,18 @@ Useful methods on results:
 uv run --with requests --with websocket-client python scripts/variant_check.py <product-url> [more-urls]
 ```
 
-It captures the `PDPMainInfo` GraphQL response via `Network.enable`; all RAM/SSD combo prices live in `components[name=new_variant_options].data[0].children[]` (`price`, `priceFmt`, `optionName`). Non-obvious details:
+It first captures the `PDPMainInfo` GraphQL response via `Network.enable`; all RAM/SSD combo prices live in `components[name=new_variant_options].data[0].children[]` (`price`, `priceFmt`, `optionName`). Non-obvious details:
 
-- **Cache-bust the PDP URL** (append `?ck=<timestamp>`): the prefetch cache serves a compact payload with empty `basicInfo.name` and no variant data.
+- **Cache-bust the PDP URL** (append `?ck=<timestamp>`): the prefetch cache serves a stale payload.
 - **Capture every matching response id**, not just the first/last: retries and replays can fire multiple times, and some are empty shells. Pick the one where `basicInfo.name` is non-null.
-- **Single-config listings have no `new_variant_options` component**; fall back to reading rendered DOM prices (`RpX.XXX.XXX` leaf nodes) after ~6s hydration.
+- **Compact binary payload kills the GraphQL path**: some listings (~1 in 3 observed) serve a ~30KB body of the form `[{"data":{"pdpMainInfo":{"requestID":"","extraPayload":"<base64-ish binary>"...}}]` - no parseable `basicInfo`, no variant data, on every fetch including cache-busted ones. Don't retry; use the fallback below.
+- **Pill-click fallback** (implemented in `variant_check.py`, output note `"no variant payload; pill-click fallback"`): wait ~14s full hydration, scroll once, enumerate `button/[role=button]/label` elements whose text matches `/i5|i7|SSD|RAM|\d+\s?(GB|TB)/i` (<60 chars), skip the `Terpilih:` pill, click each in DOM order with a ~2s settle, then read the rendered price from `[data-testid="lblPDPDetailProductPriceAmount"]`. Clicking group pills (e.g. `X1 Yoga 4th i7`) then option pills (`RAM 16 SSD 512`) composes the selection; the last-clicked option determines the displayed price. Budget ~2s per variant.
 - One listing in ~10 is delisted between search and check (404 "Waduh, tujuanmu nggak ada") - treat as dead, don't retry.
 
 ## Gotchas
 
 - **Multi-variant listings show the starting variant's price** as `price`. The headline config may cost more via the variant picker on the product page. Advise users to confirm exact config with the seller before buying.
+- **Higher variants can leave your price band entirely**: verified case - X1 Yoga 4th advertised at Rp5.4jt (i5/16GB/256GB) but its i7/16GB/1TB variant costs Rp7.75jt. When a user filters by price range, only the cheapest combo is guaranteed inside it; verify every variant they might want.
 - **Rate limit**: add `time.sleep(2)` between successive `search()` calls.
 - **Dedupe across queries**: URLs carry a query-string (`?extParam=...`); strip it before deduping.
 - **Field names**: it is `product_name`, not `name`; `ProductData` has no `.name`.
