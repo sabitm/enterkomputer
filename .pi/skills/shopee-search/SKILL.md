@@ -23,7 +23,7 @@ The session persists in the profile. If Shopee shows a slider CAPTCHA ("Geser un
 ## Usage
 
 ```bash
-uvx --with requests --with websocket-client python scripts/shopee_search.py "laptop" \
+uv run --with requests --with websocket-client python .pi/skills/shopee-search/scripts/shopee_search.py "laptop" \
   --pmin 3000000 --pmax 7000000 --limit 10 --pages 3
 ```
 
@@ -38,12 +38,16 @@ Flags: `--pmin`/`--pmax` (IDR), `--limit`.
 - **Cold navigation may trigger CAPTCHA** even when logged in; solve it in the visible window and rerun.
 - **First paint is slow**: poll for product anchors up to ~25s instead of fixed sleeps.
 - Product cards do NOT use `[data-sqe="link"]` in current DOM; match anchors by the `-i.<shopid>.<itemid>` URL pattern.
-- **Grid hydration is gated on scroll input**: without scroll events the page stalls at ~13 anchors (an ads-only carousel) and the result grid never mounts. Poll loop must scroll incrementally (`window.scrollTo`) between checks.
+- **Grid hydration is gated on trusted scroll input**: without it the page stalls at ~13 anchors (an ads-only carousel) and the result grid never mounts. See the hydration requirements below - synthetic `window.scrollTo` does NOT count as input.
 - Early anchor counts are partial (ads only, 1-13); treat <30 anchors as not-yet-rendered and keep polling. Allow ~45s for cold starts.
 - Sponsored/ad cards also match the `-i.<shopid>.<itemid>` pattern and can slip into results (e.g. unrelated products at odd prices).
 - Price/name parsing from card text is noisy: names may embed trailing prices/ratings (e.g., `...BergaransiRp3.400`). Strip before presenting.
+- **Grid hydration requires ALL of**: `Page.bringToFront` (background tabs never hydrate), full page load (`readyState == complete`) plus ~10s settle BEFORE any input, then *trusted* wheel input via `Input.dispatchMouseEvent` - synthetic `window.scrollTo` does not count and the grid stalls at ads-only anchors.
+- **Scroll pacing matters**: wheel in small steps (~1000px, 0.6s apart) with a ~5s settle after reaching bottom; scrolling too fast skips lazy-mounted cards mid-hydration. One search page serves exactly 60 organic items (+ a few ad cards) - stop at >=62 anchors or after 3 stale bottom checks.
+- **Price renders as two lines** in card text: a bare `Rp` line followed by a bare number line (`Rp\n2.800.000`). Parse that pair, not inline prices.
+- **Tab hygiene**: scripts reuse an existing `about:blank` tab and park the shared tab there when done. NEVER close the last page target via `/json/close/<id>` - when no page targets remain, Chrome exits entirely and the profile must relaunch (slow, re-triggers anti-fraud).
 - Keep `PORT=9226` and profile path consistent between manual login and script runs, or you will re-login.
-- Requires deps at call time: `uvx --with requests --with websocket-client`.
+- Requires deps at call time: `uv run --with requests --with websocket-client` (or `uvx`).
 
 ## Variant price verification
 
@@ -53,7 +57,7 @@ The search page shows only the headline (cheapest-variant) price. Real per-model
 - Hydration takes ~10s; DOM probes before that return an empty shell (~1.8KB body).
 - **Single model = the title config is exact** (no variant bait). Multiple models = assume the advertised price maps to the cheapest one until proven otherwise.
 
-Use `scripts/variant_check.py <product-url> [more-urls]` which implements all of this (same script handles Tokopedia; see tokopedia-search skill).
+Use `.pi/skills/shopee-search/scripts/variant_check.py <product-url> [more-urls]` which implements all of this (same script handles Tokopedia; see tokopedia-search skill).
 
 ## Tokopedia alternative
 

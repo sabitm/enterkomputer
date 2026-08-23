@@ -58,25 +58,29 @@ Useful methods on results:
 
 ## Variant price verification
 
-`get_product()` (detail API) is broken - Tokopedia rejects its mobile-app fingerprint with `curl: (92) HTTP/2 stream error` on every attempt. Only `search()` works. To get real per-variant prices, drive the CDP-attached Chrome from the shopee-search skill with `scripts/variant_check.py`:
+`get_product()` (detail API) is broken - Tokopedia rejects its mobile-app fingerprint with `curl: (92) HTTP/2 stream error` on every attempt. Only `search()` works. To get real per-variant prices, drive the CDP-attached Chrome from the shopee-search skill:
 
 ```bash
-uv run --with requests --with websocket-client python scripts/variant_check.py <product-url> [more-urls]
+uv run --with requests --with websocket-client python .pi/skills/tokopedia-search/scripts/tp_variants.py <product-url> [more-urls]
 ```
 
-It first captures the `PDPMainInfo` GraphQL response via `Network.enable`; all RAM/SSD combo prices live in `components[name=new_variant_options].data[0].children[]` (`price`, `priceFmt`, `optionName`). Non-obvious details:
+`tp_variants.py` skips network capture entirely and works on the rendered DOM: cache-bust the URL, wait for the buy box (`Subtotal` text), record the default selection under `Terpilih:`, then click each group pill (CPU/model, e.g. `X1 Yoga 4th i7`) and each option pill (RAM/SSD, e.g. `RAM 16 SSD 512`), re-reading the price after every click. Non-obvious details learned in practice:
 
-- **Cache-bust the PDP URL** (append `?ck=<timestamp>`): the prefetch cache serves a stale payload.
-- **Capture every matching response id**, not just the first/last: retries and replays can fire multiple times, and some are empty shells. Pick the one where `basicInfo.name` is non-null.
-- **Compact binary payload kills the GraphQL path**: some listings (~1 in 3 observed) serve a ~30KB body of the form `[{"data":{"pdpMainInfo":{"requestID":"","extraPayload":"<base64-ish binary>"...}}]` - no parseable `basicInfo`, no variant data, on every fetch including cache-busted ones. Don't retry; use the fallback below.
-- **Pill-click fallback** (implemented in `variant_check.py`, output note `"no variant payload; pill-click fallback"`): wait ~14s full hydration, scroll once, enumerate `button/[role=button]/label` elements whose text matches `/i5|i7|SSD|RAM|\d+\s?(GB|TB)/i` (<60 chars), skip the `Terpilih:` pill, click each in DOM order with a ~2s settle, then read the rendered price from `[data-testid="lblPDPDetailProductPriceAmount"]`. Clicking group pills (e.g. `X1 Yoga 4th i7`) then option pills (`RAM 16 SSD 512`) composes the selection; the last-clicked option determines the displayed price. Budget ~2s per variant.
-- One listing in ~10 is delisted between search and check (404 "Waduh, tujuanmu nggak ada") - treat as dead, don't retry.
+- **The GraphQL path is mostly dead**: PDPMainInfo arrives as an unparseable compact binary payload on nearly every listing now (~5/5 observed in one session; earlier estimate was ~1 in 3), even with cache-busting. Don't rely on it.
+- **`[data-testid="lblPDPDetailProductPriceAmount"]` no longer exists**. Read the buy box from body text instead: match `/Subtotal[^R]*Rp\s*([\d.,]+)/`.
+- **Out-of-stock combos show `-` as Subtotal** but the real price still renders lower on the page (take the LAST `Rp` match in body text) and "Stok varian ini habis" / "Stok: Habis" appears. Record these with an OOS flag instead of dropping them.
+- **Pill classification trap**: spec pills like `RAM 16 SSD 256` contain NO GB/TB unit. Classify a pill as a group only if it matches CPU/model keywords (`i5|i7|ryzen|gen \d|G\d`) AND contains no `RAM|SSD|GB|TB` token; everything else is an option. Misclassifying cascades wrong clicks and reads stale states.
+- **Clicks change state permanently** within a session: clicking a group then an option composes a selection. Enumerate group x option combos deliberately; re-clicking the default group resets.
+- **Cache-bust the PDP URL** (append `?ck=<timestamp>`): the prefetch cache can serve a stale payload.
+- One listing in ~10 is delisted between search and check (404 "Waduh, tujuanmu nggak ada") or never renders its buy box - treat as dead, don't retry.
+- **Tab hygiene**: same policy as shopee-search - reuse the parked `about:blank` tab, never close the last page target (Chrome exits entirely).
 
 ## Gotchas
 
 - **Multi-variant listings show the starting variant's price** as `price`. The headline config may cost more via the variant picker on the product page. Advise users to confirm exact config with the seller before buying.
 - **Higher variants can leave your price band entirely**: verified case - X1 Yoga 4th advertised at Rp5.4jt (i5/16GB/256GB) but its i7/16GB/1TB variant costs Rp7.75jt. When a user filters by price range, only the cheapest combo is guaranteed inside it; verify every variant they might want.
 - **Rate limit**: add `time.sleep(2)` between successive `search()` calls.
+- **Bait pricing verified at scale**: in one session nearly every multi-variant headline was misleading - e.g. "MacBook Air M1 16GB/512GB @5.79jt" where that price is actually an Intel i3 8/128 (real M1 starts ~8.4jt); "EliteBook 835 G8 R7 @6.5jt" whose R7 config really costs 7.8jt. Always verify before quoting.
 - **Dedupe across queries**: URLs carry a query-string (`?extParam=...`); strip it before deduping.
 - **Field names**: it is `product_name`, not `name`; `ProductData` has no `.name`.
 - `search()` returns `None` on any exception (bare `except` prints traceback and returns None) - check for it before iterating.
