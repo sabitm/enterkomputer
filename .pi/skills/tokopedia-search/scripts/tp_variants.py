@@ -24,10 +24,19 @@ def ensure_chrome():
     except Exception:
         pass
     import subprocess, os
+    profile = os.path.join(os.getcwd(), 'ignored', 'shopee-profile')
+    # stale locks from an unclean kill make a fresh launch hand off and exit silently
+    for sfx in ("Lock", "Cookie", "Socket"):
+        try:
+            os.remove(os.path.join(profile, f"Singleton{sfx}"))
+        except OSError:
+            pass
+    # --ozone-platform=x11: on Wayland sessions, native-Wayland Chrome hangs every
+    # CDP Input.* call; XWayland keeps input trusted
     subprocess.Popen(
-        ["google-chrome-stable", f"--remote-debugging-port={PORT}", "--no-first-run",
-         "--remote-allow-origins=*",
-         f"--user-data-dir={os.path.join(os.getcwd(), 'ignored', 'shopee-profile')}",
+        ["google-chrome-stable", f"--remote-debugging-port={PORT}", "--ozone-platform=x11",
+         "--no-first-run", "--remote-allow-origins=*", "--restore-last-session=false",
+         f"--user-data-dir={profile}",
          "about:blank"],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     for _ in range(45):

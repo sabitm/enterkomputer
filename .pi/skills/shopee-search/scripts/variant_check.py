@@ -33,10 +33,19 @@ def ensure_chrome():
         return
     except Exception:
         pass
+    # stale locks from an unclean kill make a fresh launch hand off and exit silently
+    for sfx in ("Lock", "Cookie", "Socket"):
+        try:
+            os.remove(os.path.join(PROFILE_DIR, f"Singleton{sfx}"))
+        except OSError:
+            pass
+    # --ozone-platform=x11: on Wayland sessions, native-Wayland Chrome hangs every
+    # CDP Input.* call; XWayland keeps input trusted
     subprocess.Popen(
         [
             "google-chrome-stable",
             f"--remote-debugging-port={PORT}",
+            "--ozone-platform=x11",
             "--no-first-run",
             "--remote-allow-origins=*",
             f"--user-data-dir={PROFILE_DIR}",
