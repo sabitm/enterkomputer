@@ -155,12 +155,19 @@ COLLECT_JS = """
 })()
 """
 
-JUNK_RE = re.compile(r"\s*(Rp[\d.,]+|\d+(\.\d+)?\s?(rb|jt|ribu|juta)|Bergaransi.*|.*Terjual.*)$", re.I)
+# Line-end junk tokens only. Never match with a leading .* — 'Terjual' and
+# friends can appear inside legitimate product names ("Kabel Data Terjual
+# Murah"); unanchored patterns erase the whole title.
+JUNK_TAIL_RES = [
+    re.compile(r"(?:\d+[+]?\s?)?Terjual(?:\s?\d+[+]?)?$", re.I),
+    re.compile(r"Rp[\d.,]+$"),
+    re.compile(r"\d+(?:[.,]\d+)?\s?(?:rb|jt|ribu|juta)$", re.I),
+    re.compile(r"Bergaransi.*$", re.I),
+]
 
 
 NUM_RE = re.compile(r"^[\d.,]+$")
 DISCOUNT_RE = re.compile(r"^-\d+%$")
-SOLD_RE = re.compile(r"\d+[+]?\s?(terjual|RB\+?)", re.I)
 
 
 def parse_card(card):
@@ -182,9 +189,17 @@ def parse_card(card):
         if not DISCOUNT_RE.match(ln)
     ]
     name = name_lines[0] if name_lines else ""
-    # strip trailing rating/sold-count noise glued onto the name line
-    name = JUNK_RE.sub("", name).strip()
-    return name, price
+    # strip trailing rating/sold-count noise glued onto the name line;
+    # repeat until stable because junk can be chained ("...BergaransiRp3.400")
+    changed = True
+    while changed:
+        changed = False
+        for rx in JUNK_TAIL_RES:
+            stripped = rx.sub("", name).rstrip()
+            if stripped != name:
+                name = stripped
+                changed = True
+    return name.strip(), price
 
 
 def search_page(tab, keyword, page, pmin, pmax, want, deadline_s=110):

@@ -20,11 +20,16 @@ import sys
 import time
 
 import requests
+import re
 import websocket
 
 PORT = int(os.environ.get("PORT", "9226"))
 BASE = f"http://127.0.0.1:{PORT}"
 PROFILE_DIR = os.path.join(os.getcwd(), "ignored", "shopee-profile")
+# some PDPs hydrate their get_pc payload well past 30s (observed live); the
+# extra headroom plus a retry pass keeps those from flaking
+cap_deadline_s = int(os.environ.get("CAPTURE_DEADLINE_S", "45"))
+cap_retries = int(os.environ.get("CAPTURE_RETRIES", "2"))
 
 
 def ensure_chrome():
@@ -65,6 +70,21 @@ def ensure_chrome():
 
 
 class Tab:
+    def _responsive(self, ws_url):
+        # a parked tab can belong to a wedged renderer (all CDP calls hang while
+        # /json endpoints stay alive); probe before reusing it.
+        # parity with shopee_search.Tab._responsive
+        try:
+            ws = websocket.create_connection(ws_url, timeout=8, origin=f"http://127.0.0.1:{PORT}")
+            ws.send(json.dumps({"id": 1, "method": "Runtime.evaluate",
+                                "params": {"expression": "1+1", "returnByValue": True}}))
+            ws.settimeout(8)
+            json.loads(ws.recv())
+            ws.close()
+            return True
+        except Exception:
+            return False
+
     def __init__(self):
         # reuse an existing idle tab before spawning a new one; leaving tens of
         # tabs open clutters the user's session
@@ -72,7 +92,9 @@ class Tab:
         ws_url = None
         try:
             for t in requests.get(BASE + "/json/list", timeout=5).json():
-                if t.get("type") == "page" and t.get("url", "").startswith(("about:blank", "chrome://newtab")):
+                if (t.get("type") == "page"
+                        and t.get("url", "").startswith(("about:blank", "chrome://newtab"))
+                        and self._responsive(t["webSocketDebuggerUrl"])):
                     ws_url = t["webSocketDebuggerUrl"]
                     self.tab_id = t["id"]
                     break
@@ -187,6 +209,38 @@ def is_shopee(url):
     return "shopee" in url
 
 
+def _shopee_result(tab, item):
+    """Build the success payload from a parsed get_pc item."""
+    variants = [
+        {
+            "name": mm.get("name"),
+            "price_idr": round(mm.get("price", 0) / 100000),
+            "sold": mm.get("sold_count", 0),
+        }
+        for mm in item["models"]
+    ]
+    # current get_pc payloads no longer carry item.name; take the rendered PDP
+    # h1 instead, falling back to the decorated tab title ("Jual ... | Shopee")
+    title = item.get("name")
+    if not title:
+        try:
+            title = tab.js("document.querySelector('h1')?.innerText || ''", timeout_s=8)
+        except Exception:
+            title = ""
+    if not title:
+        try:
+            t = tab.js("document.title", timeout_s=8) or ""
+        except Exception:
+            t = ""
+        title = re.sub(r"^Jual\s+|\s*\|\s*Shopee Indonesia.*$", "", t).strip()
+    note = (
+        "single model; title config is exact"
+        if len(variants) == 1
+        else "multiple models; headline price maps to the cheapest"
+    )
+    return {"title": title or None, "note": note, "variants": variants}
+
+
 def check_shopee(tab, url):
     captured = []
 
@@ -218,41 +272,30 @@ def check_shopee(tab, url):
             return {"title": None, "note": "warmup failed (homepage never loaded)"}
         time.sleep(4)
         tab.warmed = True
-    tab.cmd("Page.navigate", url=url)
-
-    deadline = time.time() + 30
-    while time.time() < deadline:
-        tab.pump(2)
-        for rid in list(captured):
-            captured.remove(rid)
-            try:
-                body = tab.cmd("Network.getResponseBody", requestId=rid)
-                txt = body.get("body", "")
-                if body.get("base64Encoded"):
-                    import base64
-                    txt = base64.b64decode(txt).decode()
-                j = json.loads(txt)
-            except Exception:
-                continue
-            item = ((j.get("data") or {}).get("item")) or {}
-            ms = item.get("models")
-            if not ms:
-                continue
-            variants = [
-                {
-                    "name": mm.get("name"),
-                    "price_idr": round(mm.get("price", 0) / 100000),
-                    "sold": mm.get("sold_count", 0),
-                }
-                for mm in ms
-            ]
-            tab.event_handler = None
-            note = (
-                "single model; title config is exact"
-                if len(variants) == 1
-                else "multiple models; headline price maps to the cheapest"
-            )
-            return {"title": item.get("name"), "note": note, "variants": variants}
+    for attempt in range(cap_retries):
+        if attempt:
+            # first pass can miss when a PDP hydrates slowly or serves an
+            # empty-shell payload; reload once in place before giving up
+            tab.cmd("Page.navigate", url=url)
+        deadline = time.time() + cap_deadline_s
+        while time.time() < deadline:
+            tab.pump(2)
+            for rid in list(captured):
+                captured.remove(rid)
+                try:
+                    body = tab.cmd("Network.getResponseBody", requestId=rid)
+                    txt = body.get("body", "")
+                    if body.get("base64Encoded"):
+                        import base64
+                        txt = base64.b64decode(txt).decode()
+                    j = json.loads(txt)
+                except Exception:
+                    continue
+                item = ((j.get("data") or {}).get("item")) or {}
+                if item.get("models"):
+                    result = _shopee_result(tab, item)
+                    tab.event_handler = None
+                    return result
     tab.event_handler = None
     return {"title": None, "note": "no pdp payload captured (login wall or captcha?)"}
 
